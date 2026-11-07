@@ -52,7 +52,7 @@ const refund = (pi: string, amount: number, key: string) =>
 async function handleContribution(sb: Admin, s: Stripe.Checkout.Session) {
   const m = s.metadata!;
   const pi = piId(s);
-  const email = s.customer_details?.email ?? s.customer_email ?? null;
+  const email = (s.customer_details?.email ?? s.customer_email)?.toLowerCase() ?? null;
   const amount = parseInt(m.amount_cents, 10);
   const fee = parseInt(m.fee_cents || "0", 10);
 
@@ -83,7 +83,7 @@ async function handleContribution(sb: Admin, s: Stripe.Checkout.Session) {
 async function handleSweep(sb: Admin, s: Stripe.Checkout.Session) {
   const pi = piId(s);
   const sweepId = s.metadata!.sweep_id;
-  const email = s.customer_details?.email ?? s.customer_email ?? null;
+  const email = (s.customer_details?.email ?? s.customer_email)?.toLowerCase() ?? null;
   await sb.from("sweeps").update({ giver_email: email, stripe_payment_intent: pi }).eq("id", sweepId);
 
   const { data: before } = await sb.from("sweeps").select("status,budget_cents").eq("id", sweepId).single();

@@ -28,7 +28,7 @@ export default async function Receipts({ searchParams }: { searchParams: Promise
   const sb = supabaseAdmin();
   const { data } = await sb.from("contributions")
     .select("id,amount_cents,refunded_cents,created_at,sweep_id,bills(biller_name,city,category,status,payment_confirmation,thank_yous(body))")
-    .or(`giver_id.eq.${user.id},giver_email.ilike.${(user.email ?? "").replace(/[,()%]/g, "")}`)
+    .or(`giver_id.eq.${user.id},giver_email.eq."${(user.email ?? "").toLowerCase().replace(/["\\]/g, "")}"`)
     .gt("amount_cents", 0).order("created_at", { ascending: false }).limit(300);
   const rows = (data ?? []) as unknown as Row[];
   const given = rows.reduce((s, r) => s + r.amount_cents - r.refunded_cents, 0);
