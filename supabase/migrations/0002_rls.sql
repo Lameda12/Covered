@@ -21,9 +21,9 @@ create policy profiles_admin_all on public.profiles for all using (public.is_adm
 create function public.block_role_escalation() returns trigger
 language plpgsql security definer set search_path = public as $$
 begin
+  -- auth.role() is null for direct DB access (migrations, SQL editor); 'service_role' for the service key.
   if new.role is distinct from old.role and not (
-       coalesce(auth.role(), 'service_role') = 'service_role' or public.is_admin()
-       or current_user in ('postgres','supabase_admin')) then
+       auth.role() is null or auth.role() = 'service_role' or public.is_admin()) then
     raise exception 'role cannot be changed';
   end if;
   return new;
