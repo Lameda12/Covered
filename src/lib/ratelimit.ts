@@ -20,5 +20,5 @@ export async function rateLimit(action: string, opts: { limit: number; windowSec
 }
 
 export class RateLimitError extends Error {
-  constructor() { super("Too many requests. Please wait a minute and try again."); }
+  constructor() { super("Too many requests. Please wait a minute and try again."); this.name = "RateLimitError"; }
 }
