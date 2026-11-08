@@ -1,60 +1,76 @@
 # Covered
 
 Pay a stranger's real bill. The money goes to the biller, never to the person.
-Next.js 15 (App Router) · Supabase (Postgres, Auth, Storage, RLS) · Stripe Checkout · Claude vision · Resend · Vercel.
+Next.js 15 on **Cloudflare Workers** (OpenNext) · Supabase Postgres + Auth · Hyperdrive · R2 · Turnstile · Stripe Checkout · Claude vision · Resend.
+
+## Architecture
+
+| Concern | Where |
+|---|---|
+| App + server actions | Cloudflare Worker (`@opennextjs/cloudflare`, `nodejs_compat`, KV incremental cache) |
+| Server-side SQL (money functions, admin queries) | `postgres.js` (max 5) via **Hyperdrive** as the `covered_app` role (`supabase/migrations/0005_app_role.sql`) |
+| Auth + RLS-scoped reads | `@supabase/ssr` in middleware (edge runtime) and server components |
+| Bill images / payout proofs | Private R2 bucket `covered-bills`; presigned PUT in, short-lived presigned GET out (`src/lib/r2.ts`) |
+| Bot protection | Turnstile on upload, checkout creation and sweep creation, verified server-side (`src/lib/turnstile.ts`) |
+| Daily expiry + refunds | Workers Cron Trigger -> `worker.ts` `scheduled()` -> `/api/cron/expire` (needs `CRON_SECRET`) |
 
 ## Local setup
 
 ```bash
 pnpm install
-cp .env.example .env.local        # fill in every value, see below
-# Supabase: create a project, then run supabase/migrations/*.sql in order (SQL editor or `supabase db push`).
-# The migration creates the private `bills` storage bucket and its policies.
-pnpm dev
-stripe listen --forward-to localhost:3000/api/stripe/webhook   # prints STRIPE_WEBHOOK_SECRET
-ALLOW_SEED=1 pnpm seed            # 30 live bills across 8 cities. NON-production databases only.
+cp .env.example .env.local && cp .env.example .dev.vars    # fill in values
+# Supabase: run supabase/migrations/*.sql in order, then:  alter role covered_app password '<strong password>';
+pnpm dev                                                    # bindings are emulated by wrangler
+stripe listen --forward-to localhost:3000/api/stripe/webhook
+ALLOW_SEED=1 pnpm seed                                      # 30 live bills. NON-production databases only.
 ```
+Test card `4242 4242 4242 4242`. Turnstile dev keys that always pass are listed in `.env.example`.
 
-Test card: `4242 4242 4242 4242`, any future date, any CVC.
-
-### Tests
+## Tests
 
 ```bash
-export TEST_DATABASE_URL=postgres://postgres@localhost:5432/covered_test   # any empty Postgres 15+ database
+export TEST_DATABASE_URL=postgres://postgres@localhost:5432/covered_test   # empty Postgres 15+ database
 pnpm test
 ```
-The DB suites apply a minimal Supabase stub plus all migrations, then test: concurrent covers never overfund (loser gets the excess back), sweep allocation and idempotency, and RLS (anon cannot read `image_path`, requester ids, tokens, emails or other users' bills). They skip when `TEST_DATABASE_URL` is unset.
+Covers: concurrent covers never overfund (loser gets the excess), sweep allocation/idempotency, RLS (anon can't read `image_path`, requester ids, tokens, emails), the `covered_app` role's least-privilege grants, and the same money functions driven through postgres.js as `covered_app`.
+To run against a remote database, point `TEST_DATABASE_URL` at a **scratch** database: the suites drop and recreate `public` and `auth` (the Supabase stub). Never point it at your real project.
 
-## Environment variables
+## Deploy to Cloudflare (what to run by hand)
 
-See `.env.example` (all documented). Set them for **Production and Preview** in Vercel.
-`NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY`, `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY`, `ANTHROPIC_API_KEY`, `RESEND_API_KEY`, `NEXT_PUBLIC_SITE_URL`, `CRON_SECRET` (+ optional `EMAIL_FROM`).
+```bash
+# 1. Resources
+pnpm wrangler kv namespace create covered-cache                 # paste id into wrangler.jsonc
+pnpm wrangler r2 bucket create covered-bills
+pnpm wrangler r2 bucket cors put covered-bills --file r2-cors.json   # see below
+pnpm wrangler hyperdrive create covered \
+  --connection-string="postgres://covered_app:PASSWORD@db.<ref>.supabase.co:5432/postgres"   # paste id into wrangler.jsonc
+# R2 API token (Object Read & Write on covered-bills) -> R2_ACCESS_KEY_ID / R2_SECRET_ACCESS_KEY
+# Turnstile widget (Dashboard > Turnstile) -> site key (build-time) + secret
+
+# 2. Secrets (one command each; values are prompted, never in git)
+for n in SUPABASE_SERVICE_ROLE_KEY NEXT_PUBLIC_SUPABASE_ANON_KEY STRIPE_SECRET_KEY STRIPE_WEBHOOK_SECRET \
+         ANTHROPIC_API_KEY RESEND_API_KEY EMAIL_FROM R2_ACCOUNT_ID R2_ACCESS_KEY_ID R2_SECRET_ACCESS_KEY \
+         TURNSTILE_SECRET_KEY CRON_SECRET; do pnpm wrangler secret put $n; done
+
+# 3. Build-time public values: put NEXT_PUBLIC_SUPABASE_URL, NEXT_PUBLIC_SUPABASE_ANON_KEY,
+#    NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY, NEXT_PUBLIC_TURNSTILE_SITE_KEY, NEXT_PUBLIC_SITE_URL in .env.production
+pnpm deploy
+```
+`r2-cors.json` (allow the browser's direct PUT from your site origin):
+```json
+[{ "AllowedOrigins": ["https://covered.<subdomain>.workers.dev"], "AllowedMethods": ["PUT"], "AllowedHeaders": ["content-type"], "MaxAgeSeconds": 3600 }]
+```
+Then: Supabase Auth > URL Configuration: add the workers.dev URL and `http://localhost:3000`. Stripe webhook: `https://<worker>/api/stripe/webhook` for `checkout.session.completed` and `charge.refunded`.
 
 ## Make yourself admin
 
-Sign in once at `/receipts` with your email, then in the Supabase SQL editor:
-
+Sign in once at `/receipts`, then in the Supabase SQL editor:
 ```sql
 update public.profiles set role = 'admin' where id = (select id from auth.users where email = 'you@example.com');
 ```
 
-## Deploy checklist (what must be clicked by hand)
-
-1. **Supabase**: create project, run the 4 migrations, Auth > URL Configuration: add `https://<your-domain>` and `http://localhost:3000` (and `/auth/**` paths) to redirect URLs. Set Site URL.
-2. **Vercel**: import the GitHub repo, add all env vars (Production + Preview). `vercel.json` already schedules `/api/cron/expire` daily; Vercel sends `Authorization: Bearer $CRON_SECRET`.
-3. **Stripe**: add endpoint `https://<domain>/api/stripe/webhook` for `checkout.session.completed` and `charge.refunded`; copy its signing secret into `STRIPE_WEBHOOK_SECRET`.
-4. **Resend**: verify your sending domain and set `EMAIL_FROM`.
-5. Run the admin SQL above.
-
-## How money moves
-
-1. `createCheckout` re-reads the bill, caps the amount at what's still owed, creates a Checkout Session (optional card-fee line).
-2. Webhook verifies the signature, claims the event id in `stripe_events`, then `apply_contribution` locks the bill row (`for update`), applies `min(amount, remaining)`, and the excess is refunded through Stripe with an idempotency key.
-3. Sweeps charge the whole budget once; `allocate_sweep` fills bills by due date under row locks; leftover is refunded; the giver gets a receipt.
-4. Payouts are manual in v1 (`/admin/payouts`) behind the `BillPayProvider` interface (`src/lib/payout.ts`).
-5. Daily cron expires bills 7 days past due and refunds contributions.
-
 ## Notes
 
-- Bills are capped at $1,500. The UI says "reviewed by our team" (admin review), not "ID checked": there is no KYC in v1.
-- `TODO(v2)` markers: recurring sweeps, match pools, leaderboards, automated biller payments, KYC, i18n, dashboard refund reconciliation.
+- Bills are capped at $1,500. The UI says "reviewed by our team", not "ID checked": there is no KYC in v1.
+- Payouts to billers are manual in v1 (`/admin/payouts`) behind `BillPayProvider` (`src/lib/payout.ts`).
+- `TODO(v2)`: recurring sweeps, match pools, leaderboards, automated biller payments, KYC, i18n, reconciling dashboard refunds.

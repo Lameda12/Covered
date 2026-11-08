@@ -2,6 +2,7 @@ import type { NextConfig } from "next";
 import { initOpenNextCloudflareForDev } from "@opennextjs/cloudflare";
 
 const config: NextConfig = {
+  serverExternalPackages: ["postgres"],
   experimental: { serverActions: { bodySizeLimit: "8mb" } },
   async headers() {
     return [{
