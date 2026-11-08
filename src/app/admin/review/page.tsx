@@ -1,18 +1,19 @@
 import { ReviewButtons } from "@/components/AdminForms";
 import { requireAdmin } from "@/lib/auth";
 import { dollars } from "@/lib/money";
+import { withDb } from "@/lib/db";
+import { presignGet } from "@/lib/r2";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 
 export const dynamic = "force-dynamic";
 
 export default async function Review() {
   await requireAdmin(); // middleware guards the route; this guards the data
-  const sb = supabaseAdmin();
-  const { data: bills } = await sb.from("bills").select("*").eq("status", "pending_review").order("created_at");
-  const withImages = await Promise.all((bills ?? []).map(async (b) => {
-    const { data } = b.image_path ? await sb.storage.from("bills").createSignedUrl(b.image_path, 600) : { data: null };
-    const { data: u } = await sb.auth.admin.getUserById(b.requester_id);
-    return { b, url: data?.signedUrl ?? null, email: u.user?.email ?? "?" };
+  const bills = await withDb((sql) => sql`select * from bills where status = 'pending_review' order by created_at`);
+  const withImages = await Promise.all(bills.map(async (b) => {
+    const url = b.image_path ? await presignGet(b.image_path, 300) : null; // short-lived signed GET
+    const { data: u } = await supabaseAdmin().auth.admin.getUserById(b.requester_id);
+    return { b, url, email: u.user?.email ?? "?" };
   }));
   return (
     <>

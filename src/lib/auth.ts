@@ -1,7 +1,7 @@
 import "server-only";
 import { redirect } from "next/navigation";
 import { currentUser } from "@/lib/supabase/server";
-import { supabaseAdmin } from "@/lib/supabase/admin";
+import { withDb } from "@/lib/db";
 
 export type Result<T = object> = ({ ok: true } & T) | { ok: false; error: string };
 export const fail = (e: unknown, fallback = "Something went wrong. Please try again."): { ok: false; error: string } => ({
@@ -14,7 +14,7 @@ export class UserError extends Error { constructor(m: string) { super(m); this.n
 export async function requireAdmin() {
   const user = await currentUser();
   if (!user) redirect("/receipts?next=/admin/review");
-  const { data } = await supabaseAdmin().from("profiles").select("role").eq("id", user.id).single();
-  if (data?.role !== "admin") throw new UserError("Admins only.");
+  const [row] = await withDb((sql) => sql<{ role: string }[]>`select role from profiles where id = ${user.id}::uuid`);
+  if (row?.role !== "admin") throw new UserError("Admins only.");
   return user;
 }

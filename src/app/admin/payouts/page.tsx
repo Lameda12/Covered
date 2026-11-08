@@ -1,7 +1,7 @@
 import { PayoutForm } from "@/components/AdminForms";
 import { requireAdmin } from "@/lib/auth";
 import { dollars } from "@/lib/money";
-import { supabaseAdmin } from "@/lib/supabase/admin";
+import { withDb } from "@/lib/db";
 
 export const dynamic = "force-dynamic";
 
@@ -29,6 +29,5 @@ export default async function Payouts() {
 }
 
 async function createList() {
-  const { data } = await supabaseAdmin().from("bills").select("*").in("status", ["funded", "paying"]).order("due_date");
-  return { data: data ?? [] };
+  return { data: await withDb((sql) => sql`select * from bills where status in ('funded','paying') order by due_date`) };
 }

@@ -1,7 +1,8 @@
 "use client";
 import { useEffect, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
-import { sendMagicLink, submitBill, uploadBill } from "@/app/actions/help";
+import { processUpload, requestUpload, sendMagicLink, submitBill } from "@/app/actions/help";
+import { TurnstileBox, useTurnstile } from "@/components/Turnstile";
 import { CATEGORIES } from "@/lib/validation";
 
 type Fields = { category: string; biller_name: string; account_last4: string; amount_dollars: string; due_date: string; city: string; first_name: string; note: string };
@@ -18,6 +19,7 @@ export function HelpFlow({ email }: { email: string | null }) {
   const [reading, setReading] = useState(false);
   const [mail, setMail] = useState("");
   const [sent, setSent] = useState(false);
+  const ts = useTurnstile();
 
   useEffect(() => {
     try {
@@ -30,8 +32,14 @@ export function HelpFlow({ email }: { email: string | null }) {
   async function onFile(file: File | undefined) {
     if (!file) return;
     setError(null); setReading(true);
-    const form = new FormData(); form.set("file", file);
-    const res = await uploadBill(form);
+    const ticket = await requestUpload(file.type, file.size, ts.token);
+    ts.reset();
+    if (!ticket.ok) { setReading(false); return setError(ticket.error); }
+    // straight from the phone to the private R2 bucket
+    let put: Response | null = null;
+    try { put = await fetch(ticket.url, { method: "PUT", body: file, headers: { "Content-Type": file.type } }); } catch {}
+    if (!put?.ok) { setReading(false); return setError("Upload failed. Check your connection and try again."); }
+    const res = await processUpload(ticket.key);
     setReading(false);
     if (!res.ok) return setError(res.error);
     const x = res.extracted;
@@ -69,10 +77,11 @@ export function HelpFlow({ email }: { email: string | null }) {
       {step === 0 && (
         <>
           <label className="drop">
-            <input type="file" accept="image/*,application/pdf" capture="environment" aria-label="Upload or take a photo of your bill" disabled={reading} onChange={(e) => onFile(e.target.files?.[0])} />
+            <input type="file" accept="image/*,application/pdf" capture="environment" aria-label="Upload or take a photo of your bill" disabled={reading || !ts.ready} onChange={(e) => onFile(e.target.files?.[0])} />
             <div className="serif" style={{ fontSize: 20, fontWeight: 700 }}>{reading ? "Reading your bill…" : "Snap or upload your bill"}</div>
             <p className="sub">{reading ? "Pulling out the biller, amount and due date." : "Photo or PDF. Rent, utilities, medical, childcare, phone or car."}</p>
           </label>
+          <TurnstileBox t={ts} />
           {reading && <div className="skeleton" style={{ height: 8 }} role="status" aria-label="Reading" />}
           {error && <p className="err-text" role="alert">{error}</p>}
           <div className="panel" style={{ fontSize: 13.5, lineHeight: 1.5 }}>

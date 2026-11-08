@@ -1,6 +1,7 @@
 "use client";
 import { useMemo, useRef, useState, useTransition } from "react";
 import { createCheckout } from "@/app/actions/give";
+import { TurnstileBox, useTurnstile } from "@/components/Turnstile";
 import { BillCardBody, type PublicBill } from "@/components/BillCard";
 import { cardFeeCents, dollars } from "@/lib/money";
 
@@ -16,6 +17,7 @@ export function Deck({ bills }: { bills: PublicBill[] }) {
   const [error, setError] = useState<string | null>(null);
   const [pending, start] = useTransition();
   const [drag, setDrag] = useState(0);
+  const ts = useTurnstile();
   const startX = useRef<number | null>(null);
 
   const list = useMemo(() => {
@@ -28,7 +30,8 @@ export function Deck({ bills }: { bills: PublicBill[] }) {
   function go(bill: PublicBill, mode: "cover" | "chip", amountCents?: number) {
     setError(null);
     start(async () => {
-      const res = await createCheckout({ billId: bill.id, mode, amountCents, coverFee });
+      const res = await createCheckout({ billId: bill.id, mode, amountCents, coverFee }, ts.token);
+      ts.reset();
       if (res.ok) window.location.assign(res.url);
       else { setError(res.error); setChipFor(null); }
     });
@@ -70,15 +73,16 @@ export function Deck({ bills }: { bills: PublicBill[] }) {
         <>
           <div className="actions">
             <button className="btn" onClick={pass} disabled={pending}>Pass</button>
-            <button className="btn" onClick={() => setChipFor(top)} disabled={pending}>Chip in</button>
-            <button className="btn go" onClick={() => go(top, "cover")} disabled={pending}>
-              {pending ? "Opening checkout…" : `Cover it ${dollars(top.amount_cents - top.funded_cents, 0)}`}
+            <button className="btn" onClick={() => setChipFor(top)} disabled={pending || !ts.ready}>Chip in</button>
+            <button className="btn go" onClick={() => go(top, "cover")} disabled={pending || !ts.ready}>
+              {pending ? "Opening checkout…" : !ts.ready ? "Verifying…" : `Cover it ${dollars(top.amount_cents - top.funded_cents, 0)}`}
             </button>
           </div>
           <div className="toggle" style={{ marginTop: 6 }}>
             <span id="fee-l">Cover the card fee{top ? ` (+${dollars(cardFeeCents(top.amount_cents - top.funded_cents))})` : ""}</span>
             <button className="sw" role="switch" aria-checked={coverFee} aria-labelledby="fee-l" onClick={() => setCoverFee(!coverFee)} />
           </div>
+          <TurnstileBox t={ts} />
           {error && <p className="err-text" role="alert">{error}</p>}
           <p className="sub" style={{ textAlign: "center", fontSize: 12 }}>Swipe right to cover, left to pass, or tap the buttons. Apple Pay and Google Pay at checkout, no account needed.</p>
         </>

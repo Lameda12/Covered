@@ -1,5 +1,5 @@
 import { SweepBuilder } from "@/components/SweepBuilder";
-import { supabaseAnon } from "@/lib/supabase/admin";
+import { withDb } from "@/lib/db";
 
 export const revalidate = 30;
 export const metadata = { title: "Sweep · Covered" };
@@ -7,8 +7,7 @@ export const metadata = { title: "Sweep · Covered" };
 export default async function Sweep() {
   let cities: string[] = [];
   try {
-    const { data } = await supabaseAnon().from("public_bills").select("city").limit(2000);
-    cities = [...new Set((data ?? []).map((d) => d.city as string))].sort();
+    cities = (await withDb((sql) => sql<{ city: string }[]>`select distinct city from public_bills order by city limit 200`)).map((r) => r.city);
   } catch {}
   return (
     <>

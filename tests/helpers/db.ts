@@ -11,7 +11,7 @@ export function makePool(max = 20) {
 
 /** Drop everything and re-apply the Supabase stub + all migrations. */
 export async function resetDb(pool: pg.Pool) {
-  await pool.query("drop schema if exists public cascade; drop schema if exists auth cascade; drop schema if exists storage cascade; create schema public;");
+  await pool.query("drop schema if exists public cascade; drop schema if exists auth cascade; create schema public;");
   await pool.query(readFileSync(path.join(root, "tests/sql/supabase_stub.sql"), "utf8"));
   const dir = path.join(root, "supabase/migrations");
   for (const f of readdirSync(dir).sort()) await pool.query(readFileSync(path.join(dir, f), "utf8"));
@@ -27,7 +27,7 @@ export async function createBill(pool: pg.Pool, requesterId: string, o: Partial<
 }> = {}): Promise<string> {
   const { rows } = await pool.query(
     `insert into public.bills (requester_id, status, category, biller_name, account_last4, amount_cents, funded_cents, due_date, city, first_name, image_path)
-     values ($1,$2,$3,$4,'2291',$5,$6, coalesce($7::date, current_date + 5), $8,'Tanya','secret/path.jpg') returning id`,
+     values ($1,$2,$3,$4,'2291',$5,$6, coalesce($7::date, current_date + 5), $8,'Tanya','uploads/secret.jpg') returning id`,
     [requesterId, o.status ?? "live", o.category ?? "electric", o.biller ?? "Metro Electric", o.amount ?? 10000, o.funded ?? 0, o.due ?? null, o.city ?? "Detroit"],
   );
   return rows[0].id;

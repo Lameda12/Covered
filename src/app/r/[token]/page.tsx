@@ -1,8 +1,8 @@
 import { notFound } from "next/navigation";
-import { BillCard } from "@/components/BillCard";
+import { BillCard, type PublicBill } from "@/components/BillCard";
 import { ThankYouBox } from "@/components/ThankYouBox";
 import { dollars } from "@/lib/money";
-import { supabaseAdmin } from "@/lib/supabase/admin";
+import { withDb } from "@/lib/db";
 
 export const dynamic = "force-dynamic";
 export const metadata = { title: "Your request · Covered", robots: { index: false, follow: false } };
@@ -13,10 +13,14 @@ const ORDER = ["pending_review", "live", "funded", "paying", "paid"];
 export default async function Status({ params }: { params: Promise<{ token: string }> }) {
   const { token } = await params;
   if (!/^[0-9a-f]{48}$/.test(token)) notFound();
-  const sb = supabaseAdmin();
-  const { data: bill } = await sb.from("bills").select("*").eq("status_token", token).single();
-  if (!bill) notFound();
-  const { data: thanks } = await sb.from("thank_yous").select("body").eq("bill_id", bill.id).maybeSingle();
+  const found = await withDb(async (sql) => {
+    const [bill] = await sql<(PublicBill & { id: string; status: string; reject_reason: string | null; payment_confirmation: string | null })[]>`select id,status,category,biller_name,account_last4,amount_cents,funded_cents,due_date,city,first_name,note,reject_reason,payment_confirmation from bills where status_token = ${token}`;
+    if (!bill) return null;
+    const [thanks] = await sql<{ body: string }[]>`select body from thank_yous where bill_id = ${bill.id}::uuid`;
+    return { bill, thanks };
+  });
+  if (!found) notFound();
+  const { bill, thanks } = found;
   const idx = ORDER.indexOf(bill.status);
   const dead = bill.status === "rejected" || bill.status === "expired";
 

@@ -1,4 +1,5 @@
 import type { NextConfig } from "next";
+import { initOpenNextCloudflareForDev } from "@opennextjs/cloudflare";
 
 const config: NextConfig = {
   experimental: { serverActions: { bodySizeLimit: "8mb" } },
@@ -14,3 +15,6 @@ const config: NextConfig = {
   },
 };
 export default config;
+
+// Makes Cloudflare bindings (Hyperdrive etc.) available in `next dev`.
+if (process.env.NODE_ENV === "development") initOpenNextCloudflareForDev();

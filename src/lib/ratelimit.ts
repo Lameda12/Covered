@@ -1,6 +1,7 @@
 import "server-only";
 import { headers } from "next/headers";
-import { supabaseAdmin } from "@/lib/supabase/admin";
+import { withDb } from "@/lib/db";
+import { hitRateLimit } from "@/lib/money-db";
 
 export async function clientIp(): Promise<string> {
   const h = await headers();
@@ -9,14 +10,11 @@ export async function clientIp(): Promise<string> {
 
 /** Postgres-backed fixed-window limiter, per IP and (if signed in) per user. Throws a friendly Error when exceeded. */
 export async function rateLimit(action: string, opts: { limit: number; windowSeconds: number; userId?: string | null }) {
-  const sb = supabaseAdmin();
   const keys = [`${action}:ip:${await clientIp()}`];
   if (opts.userId) keys.push(`${action}:user:${opts.userId}`);
-  for (const key of keys) {
-    const { data, error } = await sb.rpc("hit_rate_limit", { p_key: key, p_limit: opts.limit, p_window_seconds: opts.windowSeconds });
-    if (error) throw error;
-    if (data === false) throw new RateLimitError();
-  }
+  await withDb(async (sql) => {
+    for (const key of keys) if (!(await hitRateLimit(sql, key, opts.limit, opts.windowSeconds))) throw new RateLimitError();
+  });
 }
 
 export class RateLimitError extends Error {

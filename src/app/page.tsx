@@ -1,18 +1,17 @@
 import { Deck } from "@/components/Deck";
 import type { PublicBill } from "@/components/BillCard";
 import { dollars } from "@/lib/money";
-import { supabaseAnon } from "@/lib/supabase/admin";
+import { withDb } from "@/lib/db";
 
 export const revalidate = 10; // static + refreshed every 10s; the webhook also revalidates on each payment
 
 async function load() {
   try {
-    const sb = supabaseAnon();
-    const [bills, stats] = await Promise.all([
-      sb.from("public_bills").select("id,category,biller_name,account_last4,amount_cents,funded_cents,due_date,city,first_name,note").order("due_date").order("created_at").limit(60),
-      sb.from("public_stats").select("week_cents,week_bills").single(),
-    ]);
-    return { bills: (bills.data ?? []) as PublicBill[], stats: stats.data };
+    return await withDb(async (sql) => {
+      const bills = await sql<PublicBill[]>`select id,category,biller_name,account_last4,amount_cents,funded_cents,due_date,city,first_name,note from public_bills order by due_date, created_at limit 60`;
+      const [stats] = await sql<{ week_cents: number; week_bills: number }[]>`select week_cents::int, week_bills from public_stats`;
+      return { bills, stats };
+    });
   } catch {
     return { bills: [] as PublicBill[], stats: null };
   }

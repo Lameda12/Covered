@@ -1,0 +1,25 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "covered",
+  // Custom entry wraps the OpenNext worker and adds the daily `scheduled` handler.
+  "main": "worker.ts",
+  "compatibility_date": "2026-11-08",
+  "compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
+  "assets": { "directory": ".open-next/assets", "binding": "ASSETS" },
+  "observability": { "enabled": true },
+  "triggers": { "crons": ["0 9 * * *"] },
+  "kv_namespaces": [
+    // ISR / incremental cache. Create with `wrangler kv namespace create covered-cache`, paste the id.
+    { "binding": "NEXT_INC_CACHE_KV", "id": "REPLACE_WITH_KV_NAMESPACE_ID" }
+  ],
+  "hyperdrive": [
+    // `wrangler hyperdrive create covered --connection-string="postgres://covered_app:...@db.<ref>.supabase.co:5432/postgres"`
+    { "binding": "HYPERDRIVE", "id": "REPLACE_WITH_HYPERDRIVE_ID", "localConnectionString": "postgres://covered_app:covered_app@127.0.0.1:54329/covered_test" }
+  ],
+  "services": [{ "binding": "WORKER_SELF_REFERENCE", "service": "covered" }],
+  // Build-time public values (NEXT_PUBLIC_* are inlined by `next build`, set them in .env.production too).
+  "vars": {
+    "NEXT_PUBLIC_SITE_URL": "https://covered.REPLACE_SUBDOMAIN.workers.dev",
+    "R2_BUCKET": "covered-bills"
+  }
+}

@@ -1,3 +1,4 @@
+import pg from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { asRole, createBill, createUser, makePool, resetDb, TEST_DB_URL } from "./helpers/db";
 
@@ -90,11 +91,18 @@ d("row level security", () => {
     });
   });
 
-  it("bill images: only the owner and admins can read them", async () => {
-    await pool.query("insert into storage.objects (bucket_id, name) values ('bills', $1 || '/a.jpg')", [alice]);
-    await asRole(pool, "anon", null, async (c) => { await expect(c.query("select * from storage.objects")).rejects.toThrow(); });
-    await asRole(pool, "authenticated", alice, async (c) => { expect((await c.query("select * from storage.objects")).rowCount).toBe(1); });
-    await asRole(pool, "authenticated", bob, async (c) => { expect((await c.query("select * from storage.objects")).rowCount).toBe(0); });
-    await asRole(pool, "authenticated", admin, async (c) => { expect((await c.query("select * from storage.objects")).rowCount).toBe(1); });
+  it("covered_app (server role) is least-privilege: no deletes, no auth.users, no rate_limits, no DDL", async () => {
+    await pool.query("alter role covered_app password 'x'");
+    const url = new URL(TEST_DB_URL!); url.username = "covered_app"; url.password = "x";
+    const app = new pg.Pool({ connectionString: url.toString() });
+    try {
+      expect((await app.query("select count(*)::int c from bills")).rows[0].c).toBe(2);
+      await expect(app.query("delete from bills")).rejects.toThrow(/permission denied/);
+      await expect(app.query("select * from auth.users")).rejects.toThrow(/permission denied/);
+      await expect(app.query("select * from rate_limits")).rejects.toThrow(/permission denied/);
+      await expect(app.query("drop table bills")).rejects.toThrow(/must be owner/);
+      await expect(app.query("update profiles set role='admin'")).rejects.toThrow(/permission denied/);
+      expect((await app.query("select hit_rate_limit('k',5,60) ok")).rows[0].ok).toBe(true);
+    } finally { await app.end(); }
   });
 });

@@ -2,6 +2,7 @@ import "server-only";
 import { Resend } from "resend";
 import { siteUrl } from "@/lib/env";
 import { dollars } from "@/lib/money";
+import { withDb } from "@/lib/db";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 
 const esc = (s: string) => s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]!);
@@ -82,9 +83,9 @@ export async function emailGiverReceipt(to: string, lines: { biller: string; cit
 }
 
 export async function emailGiversPaid(billId: string, billerName: string, confirmation: string) {
-  const { data } = await supabaseAdmin().from("contributions").select("giver_email, amount_cents").eq("bill_id", billId).gt("amount_cents", 0);
+  const data = await withDb((sql) => sql<{ giver_email: string | null; amount_cents: number }[]>`select giver_email, amount_cents from contributions where bill_id = ${billId}::uuid and amount_cents > 0`);
   const byEmail = new Map<string, number>();
-  for (const c of data ?? []) if (c.giver_email) byEmail.set(c.giver_email, (byEmail.get(c.giver_email) ?? 0) + c.amount_cents);
+  for (const c of data) if (c.giver_email) byEmail.set(c.giver_email, (byEmail.get(c.giver_email) ?? 0) + c.amount_cents);
   await Promise.all([...byEmail].map(async ([to, cents]) => {
     const title = `Paid: your ${dollars(cents)} reached ${billerName}`;
     await sendEmail(to, title, layout(title, `${esc(billerName)} confirmed payment. Confirmation number: <b style="font-family:monospace">${esc(confirmation)}</b>.`, { href: await receiptsLink(to), label: "See my receipts" }));

@@ -3,23 +3,26 @@
 import { cardFeeCents } from "@/lib/money";
 import { siteUrl } from "@/lib/env";
 import { fail, UserError, type Result } from "@/lib/auth";
+import { withDb } from "@/lib/db";
 import { rateLimit } from "@/lib/ratelimit";
 import { stripe } from "@/lib/stripe";
 import { currentUser } from "@/lib/supabase/server";
-import { supabaseAdmin } from "@/lib/supabase/admin";
+import { verifyTurnstile } from "@/lib/turnstile";
 import { checkoutInput } from "@/lib/validation";
 
-/** Cover or chip in: re-reads the bill, caps the amount at what is still owed, returns a Stripe Checkout URL. */
-export async function createCheckout(input: unknown): Promise<Result<{ url: string }>> {
+type BillRow = { id: string; status: string; amount_cents: number; funded_cents: number; biller_name: string; first_name: string; city: string };
+
+/** Cover or chip in: re-reads the bill, caps the amount at what's still owed, returns a Stripe Checkout URL. */
+export async function createCheckout(input: unknown, turnstileToken?: string | null): Promise<Result<{ url: string }>> {
   try {
     const parsed = checkoutInput.safeParse(input);
     if (!parsed.success) throw new UserError("That amount isn't valid.");
     const { billId, mode, amountCents, coverFee } = parsed.data;
+    await verifyTurnstile(turnstileToken);
     const user = await currentUser();
     await rateLimit("checkout", { limit: 12, windowSeconds: 600, userId: user?.id });
 
-    const { data: bill } = await supabaseAdmin().from("bills")
-      .select("id,status,amount_cents,funded_cents,biller_name,first_name,city").eq("id", billId).single();
+    const [bill] = await withDb((sql) => sql<BillRow[]>`select id,status,amount_cents,funded_cents,biller_name,first_name,city from bills where id = ${billId}::uuid`);
     if (!bill || bill.status !== "live") throw new UserError("This bill was just covered. Pick another one.");
     const remaining = bill.amount_cents - bill.funded_cents;
     if (remaining <= 0) throw new UserError("This bill was just covered. Pick another one.");
@@ -59,20 +62,24 @@ export async function checkSession(sessionId: string): Promise<SessionState> {
   if (!/^cs_[A-Za-z0-9_]{10,200}$/.test(sessionId)) return { state: "pending" };
   const s = await stripe().checkout.sessions.retrieve(sessionId);
   if (s.payment_status !== "paid") return { state: "pending" };
-  const sb = supabaseAdmin();
   const pi = typeof s.payment_intent === "string" ? s.payment_intent : s.payment_intent?.id;
-  if (s.metadata?.kind === "sweep") {
-    const { data: sw } = await sb.from("sweeps").select("allocated_cents,refunded_cents,status").eq("stripe_session_id", s.id).single();
-    if (!sw || sw.status !== "complete") return { state: "pending" };
-    const { count } = await sb.from("contributions").select("id", { count: "exact", head: true }).eq("stripe_payment_intent", pi!);
-    return { state: "done", kind: "sweep", appliedCents: sw.allocated_cents, refundedCents: sw.refunded_cents, bills: count ?? 0 };
-  }
-  const { data: c } = await sb.from("contributions").select("amount_cents,refunded_cents,bill_id").eq("stripe_payment_intent", pi!).eq("bill_id", s.metadata?.bill_id ?? "").maybeSingle();
-  if (!c) return { state: "pending" };
-  const { data: bill } = await sb.from("bills").select("amount_cents,funded_cents,biller_name").eq("id", c.bill_id).single();
-  return {
-    state: "done", kind: "contribution", appliedCents: c.amount_cents, refundedCents: c.refunded_cents,
-    billFunded: !!bill && bill.funded_cents >= bill.amount_cents, biller: bill?.biller_name ?? "",
-    pct: bill ? Math.round((bill.funded_cents / bill.amount_cents) * 100) : 0,
-  };
+  if (!pi) return { state: "pending" };
+  return withDb(async (sql): Promise<SessionState> => {
+    if (s.metadata?.kind === "sweep") {
+      const [sw] = await sql<{ allocated_cents: number; refunded_cents: number; status: string }[]>`select allocated_cents, refunded_cents, status from sweeps where stripe_session_id = ${s.id}`;
+      if (!sw || sw.status !== "complete") return { state: "pending" };
+      const [{ n }] = await sql<{ n: number }[]>`select count(*)::int n from contributions where stripe_payment_intent = ${pi}`;
+      return { state: "done", kind: "sweep", appliedCents: sw.allocated_cents, refundedCents: sw.refunded_cents, bills: n };
+    }
+    const billId = s.metadata?.bill_id;
+    if (!billId) return { state: "pending" };
+    const [c] = await sql<{ amount_cents: number; refunded_cents: number }[]>`select amount_cents, refunded_cents from contributions where stripe_payment_intent = ${pi} and bill_id = ${billId}::uuid`;
+    if (!c) return { state: "pending" };
+    const [bill] = await sql<{ amount_cents: number; funded_cents: number; biller_name: string }[]>`select amount_cents, funded_cents, biller_name from bills where id = ${billId}::uuid`;
+    return {
+      state: "done", kind: "contribution", appliedCents: c.amount_cents, refundedCents: c.refunded_cents,
+      billFunded: !!bill && bill.funded_cents >= bill.amount_cents, biller: bill?.biller_name ?? "",
+      pct: bill ? Math.round((bill.funded_cents / bill.amount_cents) * 100) : 0,
+    };
+  });
 }

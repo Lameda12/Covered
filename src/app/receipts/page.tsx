@@ -2,7 +2,7 @@ import { SignInForm } from "@/components/SignInForm";
 import { dollars } from "@/lib/money";
 import { safeNext } from "@/lib/redirect";
 import { currentUser } from "@/lib/supabase/server";
-import { supabaseAdmin } from "@/lib/supabase/admin";
+import { withDb } from "@/lib/db";
 
 export const dynamic = "force-dynamic";
 export const metadata = { title: "Your receipts · Covered" };
@@ -25,12 +25,15 @@ export default async function Receipts({ searchParams }: { searchParams: Promise
     );
   }
   // Scoped to the verified email on the session. Only first-name-free, biller-level facts are shown.
-  const sb = supabaseAdmin();
-  const { data } = await sb.from("contributions")
-    .select("id,amount_cents,refunded_cents,created_at,sweep_id,bills(biller_name,city,category,status,payment_confirmation,thank_yous(body))")
-    .or(`giver_id.eq.${user.id},giver_email.eq."${(user.email ?? "").toLowerCase().replace(/["\\]/g, "")}"`)
-    .gt("amount_cents", 0).order("created_at", { ascending: false }).limit(300);
-  const rows = (data ?? []) as unknown as Row[];
+  const email = (user.email ?? "").toLowerCase();
+  const rows = await withDb((sql) => sql<Row[]>`
+    select c.id, c.amount_cents, c.refunded_cents, c.created_at::text as created_at, c.sweep_id,
+      json_build_object('biller_name', b.biller_name, 'city', b.city, 'category', b.category, 'status', b.status,
+        'payment_confirmation', b.payment_confirmation,
+        'thank_yous', coalesce((select json_agg(json_build_object('body', t.body)) from thank_yous t where t.bill_id = b.id), '[]'::json)) as bills
+    from contributions c join bills b on b.id = c.bill_id
+    where (c.giver_id = ${user.id}::uuid or c.giver_email = ${email}) and c.amount_cents > 0
+    order by c.created_at desc limit 300`);
   const given = rows.reduce((s, r) => s + r.amount_cents - r.refunded_cents, 0);
   const paid = rows.filter((r) => r.bills?.status === "paid").length;
   const thanks = rows.flatMap((r) => (r.bills?.thank_yous ?? []).map((t) => ({ body: t.body, where: `${r.bills!.city} · ${r.bills!.category}` })));

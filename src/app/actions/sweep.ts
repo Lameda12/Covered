@@ -7,15 +7,13 @@ import { rateLimit } from "@/lib/ratelimit";
 import { planSweep, parseSweepHeuristic, type PlanBill } from "@/lib/sweep";
 import { stripe } from "@/lib/stripe";
 import { currentUser } from "@/lib/supabase/server";
-import { supabaseAdmin, supabaseAnon } from "@/lib/supabase/admin";
+import { withDb } from "@/lib/db";
+import { verifyTurnstile } from "@/lib/turnstile";
 import { dollars } from "@/lib/money";
 import { sweepFilters, sweepText, type SweepFilters } from "@/lib/validation";
 
 async function liveBills(): Promise<PlanBill[]> {
-  const { data, error } = await supabaseAnon().from("public_bills")
-    .select("id,category,city,biller_name,due_date,amount_cents,funded_cents").limit(5000);
-  if (error) throw error;
-  return data ?? [];
+  return withDb((sql) => sql<PlanBill[]>`select id,category,city,biller_name,due_date,amount_cents,funded_cents from public_bills limit 5000`);
 }
 
 /** "heat bills in Winnipeg under $400, due this week, $10k" -> editable filters. */
@@ -48,20 +46,19 @@ export async function previewSweep(filters: unknown) {
 }
 
 /** Charge the whole budget in one Checkout. The webhook runs allocate_sweep and refunds what's left. */
-export async function startSweepCheckout(filters: unknown): Promise<Result<{ url: string }>> {
+export async function startSweepCheckout(filters: unknown, turnstileToken?: string | null): Promise<Result<{ url: string }>> {
   try {
     const f = sweepFilters.safeParse(filters);
     if (!f.success) throw new UserError("Check the budget and filters.");
+    await verifyTurnstile(turnstileToken);
     const user = await currentUser();
     await rateLimit("sweep-checkout", { limit: 6, windowSeconds: 600, userId: user?.id });
     const plan = planSweep(await liveBills(), f.data);
     if (!plan.take.length) throw new UserError("Nothing matches these rules right now.");
 
-    const sb = supabaseAdmin();
-    const { data: sweep, error } = await sb.from("sweeps").insert({
-      giver_id: user?.id ?? null, giver_email: user?.email ?? null, filters: f.data, budget_cents: f.data.budget_cents,
-    }).select("id").single();
-    if (error || !sweep) throw error ?? new Error("sweep insert failed");
+    const [sweep] = await withDb((sql) => sql<{ id: string }[]>`
+      insert into sweeps (giver_id, giver_email, filters, budget_cents)
+      values (${user?.id ?? null}::uuid, ${user?.email?.toLowerCase() ?? null}, ${sql.json(f.data)}, ${f.data.budget_cents}::int) returning id`);
 
     const metadata = { kind: "sweep", sweep_id: sweep.id, giver_id: user?.id ?? "" };
     const session = await stripe().checkout.sessions.create({
@@ -76,7 +73,7 @@ export async function startSweepCheckout(filters: unknown): Promise<Result<{ url
       success_url: `${siteUrl()}/thanks?session_id={CHECKOUT_SESSION_ID}`,
       cancel_url: `${siteUrl()}/sweep`,
     });
-    await sb.from("sweeps").update({ stripe_session_id: session.id }).eq("id", sweep.id);
+    await withDb((sql) => sql`update sweeps set stripe_session_id = ${session.id} where id = ${sweep.id}::uuid`);
     if (!session.url) throw new Error("no checkout url");
     return { ok: true, url: session.url };
   } catch (e) {

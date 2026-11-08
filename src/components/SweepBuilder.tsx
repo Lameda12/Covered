@@ -1,6 +1,7 @@
 "use client";
 import { useEffect, useRef, useState, useTransition } from "react";
 import { parseSweep, previewSweep, startSweepCheckout } from "@/app/actions/sweep";
+import { TurnstileBox, useTurnstile } from "@/components/Turnstile";
 import { dollars } from "@/lib/money";
 import { CATEGORIES, type SweepFilters } from "@/lib/validation";
 
@@ -18,6 +19,7 @@ export function SweepBuilder({ cities }: { cities: string[] }) {
   const [paying, startPay] = useTransition();
   const [loading, setLoading] = useState(false);
   const seq = useRef(0);
+  const ts = useTurnstile();
 
   useEffect(() => {
     if (!f) return;
@@ -45,7 +47,7 @@ export function SweepBuilder({ cities }: { cities: string[] }) {
   function pay() {
     if (!f) return;
     setError(null);
-    startPay(async () => { const r = await startSweepCheckout(f); if (r.ok) window.location.assign(r.url); else setError(r.error); });
+    startPay(async () => { const r = await startSweepCheckout(f, ts.token); ts.reset(); if (r.ok) window.location.assign(r.url); else setError(r.error); });
   }
 
   return (
@@ -97,7 +99,8 @@ export function SweepBuilder({ cities }: { cities: string[] }) {
           </div>
           {note && <p className="sub">{note}</p>}
           {error && <p className="err-text" role="alert">{error}</p>}
-          <button className="btn go block" disabled={paying || !preview || preview.bills === 0} onClick={pay}>
+          <TurnstileBox t={ts} />
+          <button className="btn go block" disabled={paying || !ts.ready || !preview || preview.bills === 0} onClick={pay}>
             {paying ? "Opening checkout…" : preview && preview.bills === 0 ? "Nothing matches these rules" : `Pay ${dollars(f.budget_cents, 0)}`}
           </button>
           <p className="sub" style={{ textAlign: "center", fontSize: 12 }}>You&apos;re charged your full budget once. Whatever isn&apos;t spent on bills is refunded automatically.</p>
