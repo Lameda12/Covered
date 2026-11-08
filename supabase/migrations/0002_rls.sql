@@ -21,9 +21,9 @@ create policy profiles_admin_all on public.profiles for all using (public.is_adm
 create function public.block_role_escalation() returns trigger
 language plpgsql security definer set search_path = public as $$
 begin
+  -- auth.role() is null for direct DB access (migrations, SQL editor); 'service_role' for the service key.
   if new.role is distinct from old.role and not (
-       coalesce(auth.role(), 'service_role') = 'service_role' or public.is_admin()
-       or current_user in ('postgres','supabase_admin')) then
+       auth.role() is null or auth.role() = 'service_role' or public.is_admin()) then
     raise exception 'role cannot be changed';
   end if;
   return new;
@@ -63,11 +63,5 @@ grant update (display_name, is_anonymous) on public.profiles to authenticated;
 grant insert, update, delete on public.bills to authenticated; -- gated by bills_admin_all only
 grant insert, update, delete on public.profiles to authenticated;
 
--- Storage: private bucket, owner folder = auth.uid(); admins read all.
-insert into storage.buckets (id, name, public) values ('bills', 'bills', false) on conflict (id) do nothing;
-create policy "bill images: owner read" on storage.objects for select to authenticated
-  using (bucket_id = 'bills' and ((storage.foldername(name))[1] = auth.uid()::text or public.is_admin()));
-create policy "bill images: owner upload" on storage.objects for insert to authenticated
-  with check (bucket_id = 'bills' and (storage.foldername(name))[1] = auth.uid()::text);
-create policy "bill images: admin all" on storage.objects for all to authenticated
-  using (bucket_id = 'bills' and public.is_admin()) with check (bucket_id = 'bills' and public.is_admin());
+-- Bill images live in a private Cloudflare R2 bucket (covered-bills), reached only via presigned URLs
+-- issued by the server after an ownership/admin check. Nothing in Supabase Storage.
